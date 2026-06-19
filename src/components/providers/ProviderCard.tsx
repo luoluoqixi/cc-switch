@@ -1,15 +1,15 @@
-import { useMemo, useState, useEffect } from "react";
+import { useMemo, useState, useEffect, useCallback } from "react";
 import { GripVertical, ChevronDown, ChevronUp } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import type {
-  DraggableAttributes,
-  DraggableSyntheticListeners,
-} from "@dnd-kit/core";
+import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+import type { DraggableAttributes, DraggableSyntheticListeners } from "@dnd-kit/core";
 import type { Provider } from "@/types";
-import type { AppId } from "@/lib/api";
+import { sessionsApi, type AppId } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { ProviderActions } from "@/components/providers/ProviderActions";
 import { ProviderIcon } from "@/components/ProviderIcon";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import UsageFooter from "@/components/UsageFooter";
 import SubscriptionQuotaFooter from "@/components/SubscriptionQuotaFooter";
 import CopilotQuotaFooter from "@/components/CopilotQuotaFooter";
@@ -26,6 +26,7 @@ import {
 } from "@/utils/providerConfigUtils";
 import { useProviderHealth } from "@/lib/query/failover";
 import { useUsageQuery } from "@/lib/query/queries";
+import { extractErrorMessage } from "@/utils/errorUtils";
 
 interface DragHandleProps {
   attributes: DraggableAttributes;
@@ -83,10 +84,7 @@ function isOfficialProvider(provider: Provider, appId: AppId): boolean {
       typeof config?.config === "string"
         ? extractCodexExperimentalBearerToken(config.config)
         : undefined;
-    return (
-      !bearerToken &&
-      (!apiKey || (typeof apiKey === "string" && apiKey.trim() === ""))
-    );
+    return !bearerToken && (!apiKey || (typeof apiKey === "string" && apiKey.trim() === ""));
   }
   if (appId === "gemini") {
     // 无 GEMINI_API_KEY 且无 GOOGLE_GEMINI_BASE_URL → Google OAuth 官方模式
@@ -164,6 +162,9 @@ export function ProviderCard({
   onSetAsDefault,
 }: ProviderCardProps) {
   const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const [isRepairingCodexHistory, setIsRepairingCodexHistory] = useState(false);
+  const [isRepairConfirmOpen, setIsRepairConfirmOpen] = useState(false);
 
   // OMO and OMO Slim share the same card behavior
   const isAnyOmo = isOmo || isOmoSlim;
@@ -192,11 +193,9 @@ export function ProviderCard({
 
   const usageEnabled = provider.meta?.usage_script?.enabled ?? false;
   const isOfficial = isOfficialProvider(provider, appId);
-  const supportsOfficialSubscription =
-    isOfficial && ["claude", "codex", "gemini"].includes(appId);
+  const supportsOfficialSubscription = isOfficial && ["claude", "codex", "gemini"].includes(appId);
   const isOfficialSubscriptionUsage =
-    provider.meta?.usage_script?.templateType ===
-    TEMPLATE_TYPES.OFFICIAL_SUBSCRIPTION;
+    provider.meta?.usage_script?.templateType === TEMPLATE_TYPES.OFFICIAL_SUBSCRIPTION;
   const officialSubscriptionEnabled =
     supportsOfficialSubscription && usageEnabled && isOfficialSubscriptionUsage;
   // 官方判定只认显式 category === "official"（SSOT），不回退 isOfficial 的空字段启发式。
@@ -207,25 +206,19 @@ export function ProviderCard({
   //     并不兑现（绕过 UI 即可切换）→ 属虚保护，却以误伤 category 缺失的自定义供应商为代价。
   //  3) 预设导入的官方一定带 category="official"，category 缺失的「真官方」现实中≈不存在。
   // 真官方就该有显式 category；手动新建官方应引导标注，而不是靠空字段猜。
-  const isOfficialBlockedByProxy =
-    isProxyTakeover && provider.category === "official";
+  const isOfficialBlockedByProxy = isProxyTakeover && provider.category === "official";
   const isCopilot =
     provider.meta?.providerType === PROVIDER_TYPES.GITHUB_COPILOT ||
     provider.meta?.usage_script?.templateType === "github_copilot";
   // Hermes v12+ overlay entries live under the `providers:` dict and are
   // read-only here — writes have to go through Hermes Web UI.
-  const isHermesReadOnly =
-    appId === "hermes" && isHermesReadOnlyProvider(provider.settingsConfig);
-  const isCodexOauth =
-    provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH;
+  const isHermesReadOnly = appId === "hermes" && isHermesReadOnlyProvider(provider.settingsConfig);
+  const isCodexOauth = provider.meta?.providerType === PROVIDER_TYPES.CODEX_OAUTH;
   const codexNeedsRouting = useMemo(() => {
     if (appId !== "codex" || provider.category === "official") return false;
     if (provider.meta?.apiFormat === "openai_chat") return true;
     const config = (provider.settingsConfig as Record<string, any>)?.config;
-    return (
-      typeof config === "string" &&
-      isCodexChatWireApi(extractCodexWireApi(config))
-    );
+    return typeof config === "string" && isCodexChatWireApi(extractCodexWireApi(config));
   }, [
     appId,
     provider.category,
@@ -235,9 +228,7 @@ export function ProviderCard({
   // 获取用量数据以判断是否有多套餐
   // 累加模式应用（OpenCode/OpenClaw/Hermes）：使用 isInConfig 代替 isCurrent
   const shouldAutoQuery =
-    appId === "opencode" || appId === "openclaw" || appId === "hermes"
-      ? isInConfig
-      : isCurrent;
+    appId === "opencode" || appId === "openclaw" || appId === "hermes" ? isInConfig : isCurrent;
   const autoQueryInterval = shouldAutoQuery
     ? provider.meta?.usage_script?.autoQueryInterval || 0
     : 0;
@@ -247,10 +238,8 @@ export function ProviderCard({
     autoQueryInterval,
   });
 
-  const isTokenPlan =
-    provider.meta?.usage_script?.templateType === "token_plan";
-  const hasMultiplePlans =
-    usage?.success && usage.data && usage.data.length > 1 && !isTokenPlan;
+  const isTokenPlan = provider.meta?.usage_script?.templateType === "token_plan";
+  const hasMultiplePlans = usage?.success && usage.data && usage.data.length > 1 && !isTokenPlan;
 
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -266,6 +255,42 @@ export function ProviderCard({
     }
     onOpenWebsite(displayUrl);
   };
+
+  const canRepairCodexHistory = appId === "codex" && isCurrent;
+
+  const handleRepairCodexHistoryVisibility = useCallback(async () => {
+    if (isRepairingCodexHistory) return;
+    setIsRepairingCodexHistory(true);
+    try {
+      const outcome = await sessionsApi.repairCodexHistoryVisibility();
+      await queryClient.invalidateQueries({ queryKey: ["sessions"] });
+
+      const changed =
+        outcome.migratedJsonlFiles > 0 ||
+        outcome.migratedStateRows > 0 ||
+        outcome.rebuiltSessionIndexEntries > 0;
+
+      if (changed) {
+        toast.success(
+          t("provider.codexHistoryRepairSuccess", {
+            target: outcome.targetProviderId || "current",
+            jsonl: outcome.migratedJsonlFiles,
+            rows: outcome.migratedStateRows,
+            index: outcome.rebuiltSessionIndexEntries,
+          }),
+          { closeButton: true },
+        );
+      } else {
+        toast.success(t("provider.codexHistoryRepairNoChanges"), {
+          closeButton: true,
+        });
+      }
+    } catch (error) {
+      toast.error(extractErrorMessage(error) || t("provider.codexHistoryRepairFailed"));
+    } finally {
+      setIsRepairingCodexHistory(false);
+    }
+  }, [isRepairingCodexHistory, queryClient, t]);
 
   // 判断是否是"当前使用中"的供应商
   // - OMO/OMO Slim 供应商：使用 isCurrent
@@ -287,9 +312,7 @@ export function ProviderCard({
   const hasPersistentConfigHighlight = isAdditiveMode && isInConfig;
   const shouldUseBlue =
     (isAnyOmo && isActiveProvider) ||
-    (!isAnyOmo &&
-      !isProxyTakeover &&
-      (isActiveProvider || hasPersistentConfigHighlight));
+    (!isAnyOmo && !isProxyTakeover && (isActiveProvider || hasPersistentConfigHighlight));
 
   return (
     <div
@@ -299,13 +322,10 @@ export function ProviderCard({
         isAutoFailoverEnabled || isProxyTakeover
           ? "hover:border-emerald-500/50"
           : "hover:border-border-active",
-        shouldUseGreen &&
-          "border-emerald-500/60 shadow-sm shadow-emerald-500/10",
+        shouldUseGreen && "border-emerald-500/60 shadow-sm shadow-emerald-500/10",
         shouldUseBlue && "border-blue-500/60 shadow-sm shadow-blue-500/10",
-        !(isActiveProvider || hasPersistentConfigHighlight) &&
-          "hover:shadow-sm",
-        dragHandleProps?.isDragging &&
-          "cursor-grabbing border-primary shadow-lg scale-105 z-10",
+        !(isActiveProvider || hasPersistentConfigHighlight) && "hover:shadow-sm",
+        dragHandleProps?.isDragging && "cursor-grabbing border-primary shadow-lg scale-105 z-10",
       )}
     >
       <div
@@ -314,9 +334,7 @@ export function ProviderCard({
           shouldUseGreen && "from-emerald-500/10",
           shouldUseBlue && "from-blue-500/10",
           !shouldUseGreen && !shouldUseBlue && "from-primary/10",
-          isActiveProvider || hasPersistentConfigHighlight
-            ? "opacity-100"
-            : "opacity-0",
+          isActiveProvider || hasPersistentConfigHighlight ? "opacity-100" : "opacity-0",
         )}
       />
       <div className="relative flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -346,9 +364,7 @@ export function ProviderCard({
 
           <div className="space-y-1">
             <div className="flex flex-wrap items-center gap-2 min-h-7">
-              <h3 className="text-base font-semibold leading-none">
-                {provider.name}
-              </h3>
+              <h3 className="text-base font-semibold leading-none">{provider.name}</h3>
 
               {isOmo && (
                 <span className="inline-flex items-center rounded-md bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700 dark:bg-violet-900/40 dark:text-violet-300">
@@ -414,23 +430,20 @@ export function ProviderCard({
                 />
               )}
 
-              {isAutoFailoverEnabled &&
-                isInFailoverQueue &&
-                failoverPriority && (
-                  <FailoverPriorityBadge priority={failoverPriority} />
-                )}
+              {isAutoFailoverEnabled && isInFailoverQueue && failoverPriority && (
+                <FailoverPriorityBadge priority={failoverPriority} />
+              )}
 
-              {provider.category === "third_party" &&
-                provider.meta?.isPartner && (
-                  <span
-                    className="text-yellow-500 dark:text-yellow-400"
-                    title={t("provider.officialPartner", {
-                      defaultValue: "官方合作伙伴",
-                    })}
-                  >
-                    ⭐
-                  </span>
-                )}
+              {provider.category === "third_party" && provider.meta?.isPartner && (
+                <span
+                  className="text-yellow-500 dark:text-yellow-400"
+                  title={t("provider.officialPartner", {
+                    defaultValue: "官方合作伙伴",
+                  })}
+                >
+                  ⭐
+                </span>
+              )}
 
               {isHermesReadOnly && (
                 <span
@@ -469,26 +482,16 @@ export function ProviderCard({
           <div className="ml-auto">
             <div className="flex items-center gap-1">
               {isCopilot ? (
-                <CopilotQuotaFooter
-                  meta={provider.meta}
-                  inline={true}
-                  isCurrent={isCurrent}
-                />
+                <CopilotQuotaFooter meta={provider.meta} inline={true} isCurrent={isCurrent} />
               ) : isCodexOauth ? (
-                <CodexOauthQuotaFooter
-                  meta={provider.meta}
-                  inline={true}
-                  isCurrent={isCurrent}
-                />
+                <CodexOauthQuotaFooter meta={provider.meta} inline={true} isCurrent={isCurrent} />
               ) : isOfficial ? (
                 officialSubscriptionEnabled ? (
                   <SubscriptionQuotaFooter
                     appId={appId}
                     inline={true}
                     isCurrent={isCurrent}
-                    autoQueryInterval={
-                      provider.meta?.usage_script?.autoQueryInterval ?? 0
-                    }
+                    autoQueryInterval={provider.meta?.usage_script?.autoQueryInterval ?? 0}
                   />
                 ) : null
               ) : hasMultiplePlans ? (
@@ -524,11 +527,7 @@ export function ProviderCard({
                       : t("usage.expand", { defaultValue: "展开" })
                   }
                 >
-                  {isExpanded ? (
-                    <ChevronUp size={14} />
-                  ) : (
-                    <ChevronDown size={14} />
-                  )}
+                  {isExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
                 </button>
               )}
             </div>
@@ -553,27 +552,23 @@ export function ProviderCard({
                 // (category === "official") 一律隐藏：它们 base_url 故意留空、走客户端
                 // 默认/OAuth 端点，cc-switch 没有可靠的探测目标（尤其 Claude Desktop
                 // 官方是原生 1P 模式，根本不在请求路径上）。
-                onTest && provider.category !== "official"
-                  ? () => onTest(provider)
-                  : undefined
+                onTest && provider.category !== "official" ? () => onTest(provider) : undefined
               }
               onConfigureUsage={
-                (isOfficial && !supportsOfficialSubscription) ||
-                isCopilot ||
-                isCodexOauth
+                (isOfficial && !supportsOfficialSubscription) || isCopilot || isCodexOauth
                   ? undefined
                   : () => onConfigureUsage(provider)
               }
               onDelete={() => onDelete(provider)}
               onRemoveFromConfig={
-                onRemoveFromConfig
-                  ? () => onRemoveFromConfig(provider)
-                  : undefined
+                onRemoveFromConfig ? () => onRemoveFromConfig(provider) : undefined
               }
               onDisableOmo={handleDisableAnyOmo}
-              onOpenTerminal={
-                onOpenTerminal ? () => onOpenTerminal(provider) : undefined
+              onOpenTerminal={onOpenTerminal ? () => onOpenTerminal(provider) : undefined}
+              onRepairCodexHistory={
+                canRepairCodexHistory ? () => setIsRepairConfirmOpen(true) : undefined
               }
+              isRepairingCodexHistory={isRepairingCodexHistory}
               isAutoFailoverEnabled={isAutoFailoverEnabled}
               isInFailoverQueue={isInFailoverQueue}
               onToggleFailover={onToggleFailover}
@@ -584,6 +579,18 @@ export function ProviderCard({
           </div>
         </div>
       </div>
+
+      <ConfirmDialog
+        isOpen={isRepairConfirmOpen}
+        title={t("provider.codexHistoryRepairConfirmTitle")}
+        message={t("provider.codexHistoryRepairConfirmMessage")}
+        confirmText={t("provider.codexHistoryRepairConfirmAction")}
+        onConfirm={() => {
+          setIsRepairConfirmOpen(false);
+          void handleRepairCodexHistoryVisibility();
+        }}
+        onCancel={() => setIsRepairConfirmOpen(false)}
+      />
 
       {isExpanded && hasMultiplePlans && (
         <div className="mt-4 pt-4 border-t border-border-default">

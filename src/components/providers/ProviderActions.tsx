@@ -10,6 +10,7 @@ import {
   Plus,
   Terminal,
   Trash2,
+  Wrench,
   Zap,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -33,6 +34,8 @@ interface ProviderActionsProps {
   onRemoveFromConfig?: () => void;
   onDisableOmo?: () => void;
   onOpenTerminal?: () => void;
+  onRepairCodexHistory?: () => void;
+  isRepairingCodexHistory?: boolean;
   isAutoFailoverEnabled?: boolean;
   isInFailoverQueue?: boolean;
   onToggleFailover?: (enabled: boolean) => void;
@@ -72,6 +75,8 @@ export function ProviderActions({
   onRemoveFromConfig,
   onDisableOmo,
   onOpenTerminal,
+  onRepairCodexHistory,
+  isRepairingCodexHistory = false,
   isAutoFailoverEnabled = false,
   isInFailoverQueue = false,
   onToggleFailover,
@@ -86,13 +91,10 @@ export function ProviderActions({
 
   // 累加模式应用（OpenCode 非 OMO / OpenClaw / Hermes）
   const isAdditiveMode =
-    (appId === "opencode" && !isOmo) ||
-    appId === "openclaw" ||
-    appId === "hermes";
+    (appId === "opencode" && !isOmo) || appId === "openclaw" || appId === "hermes";
 
   // 故障转移模式下的按钮逻辑（累加模式和 OMO 应用不支持故障转移）
-  const isFailoverMode =
-    !isAdditiveMode && !isOmo && isAutoFailoverEnabled && onToggleFailover;
+  const isFailoverMode = !isAdditiveMode && !isOmo && isAutoFailoverEnabled && onToggleFailover;
 
   const handleMainButtonClick = () => {
     if (isOmo) {
@@ -178,8 +180,7 @@ export function ProviderActions({
       return {
         disabled: false,
         variant: "default" as const,
-        className:
-          "bg-blue-500 hover:bg-blue-600 dark:bg-blue-600 dark:hover:bg-blue-700",
+        className: "bg-blue-500 hover:bg-blue-600 dark:bg-blue-600 dark:hover:bg-blue-700",
         icon: <Plus className="h-4 w-4" />,
         text: t("failover.addQueue", { defaultValue: "加入" }),
       };
@@ -220,8 +221,7 @@ export function ProviderActions({
 
   const buttonState = getMainButtonState();
 
-  const canDelete =
-    !isReadOnly && (isOmo || isAdditiveMode ? true : !isCurrent);
+  const canDelete = !isReadOnly && (isOmo || isAdditiveMode ? true : !isCurrent);
   const readOnlyHint = t("provider.managedByHermesHint", {
     defaultValue: "由 Hermes 管理，请在 Hermes Web UI 中编辑",
   });
@@ -263,10 +263,7 @@ export function ProviderActions({
           原生 title 与 cursor 都必须挂在未禁用的外层元素上才会生效 */}
       <span
         title={buttonState.title}
-        className={cn(
-          "inline-flex",
-          buttonState.disabled && "cursor-not-allowed",
-        )}
+        className={cn("inline-flex", buttonState.disabled && "cursor-not-allowed")}
       >
         <Button
           size="sm"
@@ -330,8 +327,7 @@ export function ProviderActions({
           title={t("provider.configureUsage")}
           className={cn(
             iconButtonClass,
-            !onConfigureUsage &&
-              "opacity-40 cursor-not-allowed text-muted-foreground",
+            !onConfigureUsage && "opacity-40 cursor-not-allowed text-muted-foreground",
           )}
         >
           <BarChart3 className="h-4 w-4" />
@@ -343,12 +339,26 @@ export function ProviderActions({
             variant="ghost"
             onClick={onOpenTerminal}
             title={t("provider.openTerminal", "打开终端")}
-            className={cn(
-              iconButtonClass,
-              "hover:text-emerald-600 dark:hover:text-emerald-400",
-            )}
+            className={cn(iconButtonClass, "hover:text-emerald-600 dark:hover:text-emerald-400")}
           >
             <Terminal className="h-4 w-4" />
+          </Button>
+        )}
+
+        {onRepairCodexHistory && (
+          <Button
+            size="icon"
+            variant="ghost"
+            onClick={onRepairCodexHistory}
+            disabled={isRepairingCodexHistory}
+            title={t("provider.repairCodexHistoryVisibility")}
+            className={cn(iconButtonClass, "hover:text-blue-600 dark:hover:text-blue-400")}
+          >
+            {isRepairingCodexHistory ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Wrench className="h-4 w-4" />
+            )}
           </Button>
         )}
 
